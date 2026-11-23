@@ -75,6 +75,44 @@ src/
 | `npm run db:seed` | Seed sample data |
 | `npm run db:rls` | Enable Row Level Security policies |
 | `npm run db:studio` | Open Drizzle Studio |
+| `npm test` | Run booking concurrency tests (needs `TEST_DATABASE_URL`) |
+
+## Booking and seat handling
+
+Seats are taken and returned with single conditional SQL statements, so
+concurrent requests cannot oversell a tour or return seats twice:
+
+- **Booking:** `UPDATE tours SET available_seats = available_seats - n WHERE id = ? AND available_seats >= n`.
+  If two customers race for the last seat, Postgres locks the row and re-checks
+  the `WHERE`, so the second request updates 0 rows and is told no seats are left.
+  The booking row is inserted in the same transaction, so a failed insert gives the seats back.
+- **Booking numbers** come from the `booking_number_seq` Postgres sequence, so
+  concurrent bookings never get the same number.
+- **Customer cancel:** `UPDATE bookings SET status = 'cancelled' WHERE ... AND status = 'pending'`.
+  Only the request that gets a row back returns the seats.
+- **Admin status change:** locks the booking with `SELECT ... FOR UPDATE` and only
+  allows `pending → confirmed/cancelled` and `confirmed → cancelled/completed`.
+
+### Testing
+
+`tests/booking-concurrency.test.mts` fires real concurrent requests at a real
+Postgres database (mocks cannot reproduce a race):
+
+```bash
+# use a throwaway database, never production
+DATABASE_URL=<test-db-url> npm run db:push
+TEST_DATABASE_URL=<test-db-url> npm test
+```
+
+Existing databases: run `supabase/migrations/003_booking_number_seq.sql` once
+(or `npm run db:push`) to create the booking number sequence.
+
+### Known limitation
+
+`available_seats` belongs to the tour, not to a departure date, so a booking for
+one date uses up seats for every date. The fix is a `tour_departures (tour_id,
+date, seats_left)` table and running the same conditional `UPDATE` against the
+departure row.
 
 ## Deploy to Vercel
 
