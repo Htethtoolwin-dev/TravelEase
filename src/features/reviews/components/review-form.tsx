@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useForm } from "react-hook-form";
+import { useForm, useWatch } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Star } from "lucide-react";
 import { toast } from "sonner";
@@ -23,8 +23,8 @@ export function ReviewForm({ tourId, tourTitle }: ReviewFormProps) {
     register,
     handleSubmit,
     setValue,
-    watch,
     reset,
+    control,
     formState: { errors, isSubmitting },
   } = useForm<CreateReviewInput>({
     resolver: zodResolver(createReviewSchema),
@@ -35,7 +35,7 @@ export function ReviewForm({ tourId, tourTitle }: ReviewFormProps) {
     },
   });
 
-  const rating = watch("rating");
+  const rating = useWatch({ control, name: "rating" });
 
   async function onSubmit(data: CreateReviewInput) {
     const result = await submitReview(data);
