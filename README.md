@@ -100,8 +100,8 @@ Postgres database (mocks cannot reproduce a race):
 
 ```bash
 # use a throwaway database, never production
-DATABASE_URL=<test-db-url> npm run db:push
-TEST_DATABASE_URL=<test-db-url> npm test
+DATABASE_URL_DRIZZLE="<test-db-url>" npm run db:push
+TEST_DATABASE_URL="<test-db-url>" npm test
 ```
 
 Existing databases: run `supabase/migrations/003_booking_number_seq.sql` once

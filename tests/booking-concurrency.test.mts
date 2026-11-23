@@ -6,7 +6,7 @@
  * transactions and row locks. Mocks would always pass.
  *
  *   1. Create an empty test database (NOT your Supabase production DB).
- *   2. DATABASE_URL=<test db url> npm run db:push
+ *   2. DATABASE_URL_DRIZZLE=<test db url> npm run db:push
  *   3. TEST_DATABASE_URL=<test db url> npm test
  */
 import { after, before, describe, test } from "node:test";
@@ -47,13 +47,14 @@ function futureDate() {
 }
 
 async function makeUser() {
-  const id = `test-${runId}-${userIds.length}`;
+  // Random suffix: makeUser runs in parallel, so a counter would repeat ids.
+  const id = `test-${runId}-${randomUUID().slice(0, 8)}`;
+  userIds.push(id);
   await db.insert(user).values({
     id,
     name: "Test User",
     email: `${id}@example.test`,
   });
-  userIds.push(id);
   return id;
 }
 
@@ -64,7 +65,7 @@ async function makeTour(availableSeats: number) {
       destinationId,
       categoryId,
       title: "Test tour",
-      slug: `test-tour-${runId}-${tourIds.length}`,
+      slug: `test-tour-${runId}-${randomUUID().slice(0, 8)}`,
       description: "Test",
       duration: "1 day",
       price: "100.00",
