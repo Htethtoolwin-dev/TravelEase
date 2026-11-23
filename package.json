@@ -12,7 +12,8 @@
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio",
     "db:seed": "tsx scripts/seed.ts",
-    "db:rls": "tsx scripts/enable-rls.ts"
+    "db:rls": "tsx scripts/enable-rls.ts",
+    "test": "tsx --test \"tests/**/*.test.mts\""
   },
   "dependencies": {
     "@base-ui/react": "^1.6.0",

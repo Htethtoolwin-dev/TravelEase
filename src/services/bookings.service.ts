@@ -1,29 +1,22 @@
-import { and, desc, eq, gte, ilike, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { bookings, destinations, tours } from "@/lib/db/schema";
 import type { CreateBookingInput } from "@/schemas/booking";
 import { getEffectivePrice } from "@/utils/format";
 import { BOOKING_STATUS } from "@/constants";
 
-function bookingPrefix() {
-  return `TRV-${new Date().getFullYear()}-`;
-}
-
-async function nextBookingNumber() {
-  const prefix = bookingPrefix();
-
-  const [latest] = await db
-    .select({ bookingNumber: bookings.bookingNumber })
-    .from(bookings)
-    .where(ilike(bookings.bookingNumber, `${prefix}%`))
-    .orderBy(desc(bookings.bookingNumber))
-    .limit(1);
-
-  const nextNumber = latest?.bookingNumber
-    ? Number.parseInt(latest.bookingNumber.split("-")[2] ?? "0", 10) + 1
-    : 1;
-
-  return `${prefix}${String(nextNumber).padStart(6, "0")}`;
+// Booking numbers come from a Postgres sequence. nextval() is atomic, so two
+// concurrent bookings can never get the same number, and it is never rolled
+// back, so a failed booking just leaves a gap (which is fine for an ID).
+// Reading MAX(booking_number) + 1 instead lets two requests pick the same
+// number at the same time.
+async function nextBookingNumber(executor: Pick<typeof db, "execute">) {
+  const [row] = await executor.execute<{ n: string }>(
+    sql`select nextval('booking_number_seq')::text as n`,
+  );
+  const n = row?.n;
+  if (!n) throw new Error("Could not allocate a booking number.");
+  return `TRV-${new Date().getFullYear()}-${n.padStart(6, "0")}`;
 }
 
 export async function getBookingByNumber(bookingNumber: string) {
@@ -95,6 +88,9 @@ export async function createBooking(
 
   try {
     return await db.transaction(async (tx) => {
+      // Check and decrement in ONE statement. Postgres locks the row and
+      // re-checks the WHERE clause, so if two requests race for the last
+      // seat, the second one updates 0 rows and gets "no seats left".
       const [updatedTour] = await tx
         .update(tours)
         .set({
@@ -122,32 +118,23 @@ export async function createBooking(
         };
       }
 
-      let booking;
-      for (let attempt = 0; attempt < 3; attempt++) {
-        const bookingNumber = await nextBookingNumber();
-        try {
-          [booking] = await tx
-            .insert(bookings)
-            .values({
-              bookingNumber,
-              userId,
-              tourId: tour.id,
-              travelDate: input.travelDate,
-              travelers: input.travelers,
-              travelerInfo: input.travelerInfo,
-              totalPrice,
-              bookingStatus: "pending",
-              paymentStatus: "pending",
-            })
-            .returning();
-          break;
-        } catch (err) {
-          const isUniqueViolation =
-            err instanceof Error &&
-            (err.message.includes("unique") || err.message.includes("duplicate"));
-          if (!isUniqueViolation || attempt === 2) throw err;
-        }
-      }
+      // Insert inside the same transaction as the seat update: if this
+      // fails, the seat decrement above is rolled back too.
+      const bookingNumber = await nextBookingNumber(tx);
+      const [booking] = await tx
+        .insert(bookings)
+        .values({
+          bookingNumber,
+          userId,
+          tourId: tour.id,
+          travelDate: input.travelDate,
+          travelers: input.travelers,
+          travelerInfo: input.travelerInfo,
+          totalPrice,
+          bookingStatus: "pending",
+          paymentStatus: "pending",
+        })
+        .returning();
 
       if (!booking) {
         throw new Error("Failed to create booking.");
@@ -236,34 +223,45 @@ export async function getDashboardBookingStats(userId: string) {
 }
 
 export async function cancelBooking(bookingNumber: string, userId: string) {
-  const data = await getBookingByNumberForUser(bookingNumber, userId);
-  if (!data) {
-    return { success: false as const, error: "Booking not found." };
-  }
-
-  if (data.booking.bookingStatus !== BOOKING_STATUS.PENDING) {
-    return {
-      success: false as const,
-      error: "Only pending bookings can be cancelled.",
-    };
-  }
-
   try {
-    await db.transaction(async (tx) => {
+    return await db.transaction(async (tx) => {
+      // Flip the status only if it is still pending, in one statement.
+      // If the user double-clicks Cancel (or an admin cancels at the same
+      // time), only one request gets a row back, so seats are returned once.
+      const [cancelled] = await tx
+        .update(bookings)
+        .set({ bookingStatus: BOOKING_STATUS.CANCELLED })
+        .where(
+          and(
+            eq(bookings.bookingNumber, bookingNumber),
+            eq(bookings.userId, userId),
+            eq(bookings.bookingStatus, BOOKING_STATUS.PENDING),
+          ),
+        )
+        .returning({
+          tourId: bookings.tourId,
+          travelers: bookings.travelers,
+        });
+
+      if (!cancelled) {
+        const owned = await getBookingByNumberForUser(bookingNumber, userId);
+        return {
+          success: false as const,
+          error: owned
+            ? "Only pending bookings can be cancelled."
+            : "Booking not found.",
+        };
+      }
+
       await tx
         .update(tours)
         .set({
-          availableSeats: sql`LEAST(${tours.availableSeats} + ${data.booking.travelers}, ${tours.maxGuests})`,
+          availableSeats: sql`${tours.availableSeats} + ${cancelled.travelers}`,
         })
-        .where(eq(tours.id, data.booking.tourId));
+        .where(eq(tours.id, cancelled.tourId));
 
-      await tx
-        .update(bookings)
-        .set({ bookingStatus: BOOKING_STATUS.CANCELLED })
-        .where(eq(bookings.id, data.booking.id));
+      return { success: true as const };
     });
-
-    return { success: true as const };
   } catch {
     return { success: false as const, error: "Failed to cancel booking." };
   }

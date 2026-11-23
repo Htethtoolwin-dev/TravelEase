@@ -159,38 +159,47 @@ export async function getAllBookingsAdmin() {
     .orderBy(desc(bookings.createdAt));
 }
 
+// Which status changes an admin may make. Cancelled and completed are final:
+// re-confirming a cancelled booking would need its seats taken again, and
+// those seats may already belong to someone else.
+const ALLOWED_TRANSITIONS: Record<string, readonly string[]> = {
+  [BOOKING_STATUS.PENDING]: [BOOKING_STATUS.CONFIRMED, BOOKING_STATUS.CANCELLED],
+  [BOOKING_STATUS.CONFIRMED]: [BOOKING_STATUS.CANCELLED, BOOKING_STATUS.COMPLETED],
+};
+
 export async function updateBookingStatus(
   bookingId: string,
   status: "confirmed" | "cancelled" | "completed",
 ) {
   try {
     return await db.transaction(async (tx) => {
+      // FOR UPDATE locks this booking row until the transaction ends, so a
+      // customer cancelling at the same moment waits, then sees the new
+      // status. Without the lock both could cancel and return seats twice.
       const [booking] = await tx
         .select()
         .from(bookings)
         .where(eq(bookings.id, bookingId))
-        .limit(1);
+        .limit(1)
+        .for("update");
 
       if (!booking) {
         return { success: false as const, error: "Booking not found." };
       }
 
       const previousStatus = booking.bookingStatus;
-
-      if (status === "cancelled" && previousStatus === BOOKING_STATUS.PENDING) {
-        await tx
-          .update(tours)
-          .set({
-            availableSeats: sql`LEAST(${tours.availableSeats} + ${booking.travelers}, ${tours.maxGuests})`,
-          })
-          .where(eq(tours.id, booking.tourId));
+      if (!ALLOWED_TRANSITIONS[previousStatus]?.includes(status)) {
+        return {
+          success: false as const,
+          error: `A ${previousStatus} booking cannot be changed to ${status}.`,
+        };
       }
 
-      if (status === "cancelled" && previousStatus === BOOKING_STATUS.CONFIRMED) {
+      if (status === BOOKING_STATUS.CANCELLED) {
         await tx
           .update(tours)
           .set({
-            availableSeats: sql`LEAST(${tours.availableSeats} + ${booking.travelers}, ${tours.maxGuests})`,
+            availableSeats: sql`${tours.availableSeats} + ${booking.travelers}`,
           })
           .where(eq(tours.id, booking.tourId));
       }

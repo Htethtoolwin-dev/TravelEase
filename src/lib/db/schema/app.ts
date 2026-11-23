@@ -5,6 +5,7 @@ import {
   integer,
   jsonb,
   pgEnum,
+  pgSequence,
   pgTable,
   text,
   timestamp,
@@ -110,6 +111,11 @@ export const tourImages = pgTable(
   },
   (table) => [index("tour_images_tour_id_idx").on(table.tourId)],
 );
+
+// Source of booking numbers (TRV-YYYY-000123). See nextBookingNumber().
+export const bookingNumberSeq = pgSequence("booking_number_seq", {
+  startWith: 1,
+});
 
 export const bookings = pgTable(
   "bookings",
