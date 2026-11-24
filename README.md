@@ -104,6 +104,9 @@ DATABASE_URL_DRIZZLE="<test-db-url>" npm run db:push
 TEST_DATABASE_URL="<test-db-url>" npm test
 ```
 
+`npm test` also reads `TEST_DATABASE_URL` from `.env.local`, so once it is set
+there you can just run `npm test`.
+
 Existing databases: run `supabase/migrations/003_booking_number_seq.sql` once
 (or `npm run db:push`) to create the booking number sequence.
 
